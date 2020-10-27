@@ -20,20 +20,33 @@ if __name__ == '__main__':
     min_val = np.min(split_val, axis=1)
     std_val = np.std(split_val, axis=1)
     x_val = np.arange(len(mean_val))
-    plt.fill_between(
+
+    fig = plt.figure()
+
+    ax1 = fig.add_subplot(1, 2, 1)
+    ax1.fill_between(
         x_val, mean_val - std_val, mean_val + std_val, alpha=0.5, color='r')
-    plt.plot(x_val, mean_val, label='validation mean', c='r')
-    plt.plot(x_val, min_val, label='validation min', c='k', ls='--')
+    ax1.plot(x_val, mean_val, label='validation mean', c='r')
+    ax1.plot(x_val, min_val, label='validation min', c='k', ls='--')
+
+    ax1.grid(which='both', color='gray', linestyle='--')
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Loss')
+    ax1.legend(edgecolor='white')
 
     mean_trn = np.mean(split_trn, axis=1)
     std_trn = np.std(split_trn, axis=1)
     x_trn = np.arange(len(mean_trn))
-    plt.fill_between(
-        x_trn, mean_trn - std_trn, mean_trn + std_trn, alpha=0.5, color='b')
-    plt.plot(x_trn, mean_trn, label='training mean', c='b')
 
-    plt.grid(which='both', color='gray', linestyle='--')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend(edgecolor='white')
+    ax2 = fig.add_subplot(1, 2, 2)
+    ax2.fill_between(
+        x_trn, mean_trn - std_trn, mean_trn + std_trn, alpha=0.5, color='b')
+    ax2.plot(x_trn, mean_trn, label='training mean', c='b')
+
+    ax2.grid(which='both', color='gray', linestyle='--')
+    ax2.set_xlabel('Epoch')
+    ax2.set_ylabel('Loss')
+    ax2.legend(edgecolor='white')
+
+    fig.tight_layout()
     plt.show()

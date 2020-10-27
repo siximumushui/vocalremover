@@ -14,9 +14,9 @@ class BaseASPPNet(nn.Module):
         self.enc3 = layers.Encoder(ch * 2, ch * 4, 3, 2, 1)
         self.enc4 = layers.Encoder(ch * 4, ch * 8, 3, 2, 1)
 
-        self.aspp = layers.ASPPModule(ch * 8, ch * 16, dilations)
+        self.aspp = layers.ASPPModule(ch * 8, ch * 8, dilations)
 
-        self.dec4 = layers.Decoder(ch * (8 + 16), ch * 8, 3, 1, 1)
+        self.dec4 = layers.Decoder(ch * (8 + 8), ch * 8, 3, 1, 1)
         self.dec3 = layers.Decoder(ch * (4 + 8), ch * 4, 3, 1, 1)
         self.dec2 = layers.Decoder(ch * (2 + 4), ch * 2, 3, 1, 1)
         self.dec1 = layers.Decoder(ch * (1 + 2), ch, 3, 1, 1)
@@ -41,47 +41,60 @@ class CascadedASPPNet(nn.Module):
 
     def __init__(self, n_fft):
         super(CascadedASPPNet, self).__init__()
-        self.stg1_low_band_net = BaseASPPNet(2, 16)
-        self.stg1_high_band_net = BaseASPPNet(2, 16)
+        self.stg1_low_band_net = BaseASPPNet(4, 16)
+        self.stg1_high_band_net = BaseASPPNet(4, 16)
 
-        self.stg2_bridge = layers.Conv2DBNActiv(18, 8, 1, 1, 0)
-        self.stg2_full_band_net = BaseASPPNet(8, 16)
+        self.stg2_bridge = layers.Conv2DBNActiv(20, 8, 1, 1, 0)
+        self.stg2_low_band_net = BaseASPPNet(8, 16)
+        self.stg2_high_band_net = BaseASPPNet(8, 16)
 
-        self.stg3_bridge = layers.Conv2DBNActiv(34, 16, 1, 1, 0)
-        self.stg3_full_band_net = BaseASPPNet(16, 32)
+        self.stg3_mag_bridge = layers.Conv2DBNActiv(34, 8, 1, 1, 0)
+        self.stg3_full_band_net = BaseASPPNet(8, 16)
 
-        self.out = nn.Conv2d(32, 2, 1, bias=False)
+        self.stg3_phase_bridge = layers.Conv2DBNActiv(34, 8, 1, 1, 0)
+        self.stg3_phase_net = BaseASPPNet(8, 16)
+
+        self.out = nn.Conv2d(16, 2, 1, bias=False)
+        self.phase_out = nn.Conv2d(16, 2, 1, bias=False)
         self.aux1_out = nn.Conv2d(16, 2, 1, bias=False)
         self.aux2_out = nn.Conv2d(16, 2, 1, bias=False)
 
         self.max_bin = n_fft // 2
+        self.band_size = self.max_bin // 2
         self.output_bin = n_fft // 2 + 1
 
         self.offset = 128
 
-    def forward(self, x):
-        mix = x.detach()
-        x = x.clone()
-
+    def forward(self, x_mag, x_phase):
+        x = torch.cat([x_mag, x_phase], dim=1)
         x = x[:, :, :self.max_bin]
 
-        bandw = x.size()[2] // 2
-        aux1 = torch.cat([
-            self.stg1_low_band_net(x[:, :, :bandw]),
-            self.stg1_high_band_net(x[:, :, bandw:])
-        ], dim=2)
+        h_stg1_low = self.stg1_low_band_net(x[:, :, :self.band_size])
+        h_stg1_high = self.stg1_high_band_net(x[:, :, self.band_size:])
+        aux1 = torch.cat([h_stg1_low, h_stg1_high], dim=2)
 
         h = torch.cat([x, aux1], dim=1)
-        aux2 = self.stg2_full_band_net(self.stg2_bridge(h))
+        h = self.stg2_bridge(h)
+        h_stg2_low = self.stg2_low_band_net(h[:, :, :self.band_size])
+        h_stg2_high = self.stg2_high_band_net(h[:, :, self.band_size:])
+        aux2 = torch.cat([h_stg2_low, h_stg2_high], dim=2)
 
-        h = torch.cat([x, aux1, aux2], dim=1)
-        h = self.stg3_full_band_net(self.stg3_bridge(h))
+        h = torch.cat([x[:, :2], aux1, aux2], dim=1)
+        h = self.stg3_mag_bridge(h)
+        h = self.stg3_full_band_net(h)
 
         mask = torch.sigmoid(self.out(h))
         mask = F.pad(
             input=mask,
             pad=(0, 0, 0, self.output_bin - mask.size()[2]),
             mode='replicate')
+
+        h = torch.cat([x[:, 2:, :self.band_size], h_stg1_low, h_stg2_low], dim=1)
+        h = self.stg3_phase_bridge(h)
+        h = self.stg3_phase_net(h)
+
+        phase_mask = torch.tanh(self.phase_out(h))
+        phase_mask = torch.cat([phase_mask, torch.ones_like(x_phase[:, :, self.band_size:])], dim=2)
 
         if self.training:
             aux1 = torch.sigmoid(self.aux1_out(aux1))
@@ -94,15 +107,20 @@ class CascadedASPPNet(nn.Module):
                 input=aux2,
                 pad=(0, 0, 0, self.output_bin - aux2.size()[2]),
                 mode='replicate')
-            return mask * mix, aux1 * mix, aux2 * mix
+            return mask, phase_mask, aux1, aux2
         else:
-            return mask * mix
+            return mask, phase_mask
 
-    def predict(self, x_mag):
-        h = self.forward(x_mag)
+    def predict(self, x_mag, x_phase):
+        mask, phase_mask = self.forward(x_mag, x_phase)
+
+        mag = mask * x_mag
+        phase_mask[mask > 0.5] = 1
+        phase = phase_mask * x_phase
 
         if self.offset > 0:
-            h = h[:, :, :, self.offset:-self.offset]
-            assert h.size()[3] > 0
+            mag = mag[:, :, :, self.offset:-self.offset]
+            phase = phase[:, :, :, self.offset:-self.offset]
+            assert mag.size()[3] > 0 and phase.size()[3] > 0
 
-        return h
+        return mag, phase

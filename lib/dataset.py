@@ -24,9 +24,11 @@ class VocalRemoverValidationSet(torch.utils.data.Dataset):
         X, y = data['X'], data['y']
 
         X_mag = np.abs(X)
+        X_phase = np.angle(X) / np.pi
         y_mag = np.abs(y)
+        y_phase = np.angle(y) / np.pi
 
-        return X_mag, y_mag
+        return X_mag, X_phase, y_mag, y_phase
 
 
 def make_pair(mix_dir, inst_dir):
@@ -87,11 +89,11 @@ def augment(X, y, reduction_rate, reduction_mask, mixup_rate, mixup_alpha):
             # swap channel
             X[idx] = X[idx, ::-1]
             y[idx] = y[idx, ::-1]
-        if np.random.uniform() < 0.02:
+        if np.random.uniform() < 0.01:
             # mono
             X[idx] = X[idx].mean(axis=0, keepdims=True)
             y[idx] = y[idx].mean(axis=0, keepdims=True)
-        if np.random.uniform() < 0.02:
+        if np.random.uniform() < 0.01:
             # inst
             X[idx] = y[idx]
 

@@ -15,10 +15,84 @@ from lib import nets
 from lib import spec_utils
 
 
-def train_inner_epoch(X, y, model, device, optimizer, batchsize):
+# def train_inner_epoch(X, y, model, device, optimizer, batchsize):
+#     model.train()
+#     sum_loss = 0
+#     crit_mag = nn.L1Loss()
+#     crit_phase = nn.MSELoss(reduction='none')
+#     perm = np.random.permutation(len(X))
+
+#     for i in range(0, len(X), batchsize):
+#         local_perm = perm[i: i + batchsize]
+
+#         X_batch = X[local_perm]
+#         y_batch = y[local_perm]
+
+#         X_mag = np.abs(X_batch)
+#         X_mag = torch.from_numpy(X_mag).to(device)
+#         X_phase = np.angle(X_batch) / np.pi
+#         X_phase = torch.from_numpy(X_phase).to(device)
+
+#         y_mag = np.abs(y_batch)
+#         y_mag = torch.from_numpy(y_mag).to(device)
+#         y_phase = np.angle(y_batch) / np.pi
+#         y_phase = torch.from_numpy(y_phase).to(device)
+
+#         model.zero_grad()
+#         pred_mask, pred_phase_mask, aux1, aux2 = model(X_mag, X_phase)
+#         phase_weight = torch.clamp(1 - pred_mask.detach(), 0, 1)
+
+#         loss_mag = crit_mag(X_mag * pred_mask, y_mag) * 0.8
+#         loss_mag += crit_mag(X_mag * aux1, y_mag) * 0.1
+#         loss_mag += crit_mag(X_mag * aux2, y_mag) * 0.1
+
+#         loss_phase = crit_phase(X_phase * pred_phase_mask, y_phase) * phase_weight
+#         loss_phase = torch.mean(loss_phase[:, :, :model.band_size])
+
+#         loss = loss_mag + loss_phase * 0.01
+#         # loss = loss_mag
+
+#         loss.backward()
+#         optimizer.step()
+
+#         sum_loss += loss.item() * len(X_batch)
+
+#     return sum_loss / len(X)
+
+
+# def val_inner_epoch(dataloader, model, device):
+#     model.eval()
+#     sum_loss = 0
+#     crit_mag = nn.L1Loss()
+#     crit_phase = nn.MSELoss(reduction='none')
+
+#     with torch.no_grad():
+#         for X_mag, X_phase, y_mag, y_phase in dataloader:
+#             X_mag = X_mag.to(device)
+#             X_phase = X_phase.to(device)
+
+#             y_mag = y_mag.to(device)
+#             y_phase = y_phase.to(device)
+
+#             pred_mask, pred_phase_mask = model(X_mag, X_phase)
+
+#             loss_mag = crit_mag(X_mag * pred_mask, y_mag)
+#             loss_phase = crit_phase(X_phase * pred_phase_mask, y_phase)
+#             loss_phase = torch.mean(loss_phase[:, :, :model.band_size])
+#             loss = loss_mag + loss_phase * 0.01
+
+#             sum_loss += loss.item() * len(X_mag)
+
+#     return sum_loss / len(dataloader.dataset)
+
+
+def train_inner_epoch(X, y, model, device, optimizer, batchsize, freeze_module_list):
     model.train()
+    for m in freeze_module_list:
+        m.eval()
+
     sum_loss = 0
-    crit = nn.L1Loss()
+    crit_phase = nn.MSELoss(reduction='none')
     perm = np.random.permutation(len(X))
 
     for i in range(0, len(X), batchsize):
@@ -28,17 +102,23 @@ def train_inner_epoch(X, y, model, device, optimizer, batchsize):
         y_batch = y[local_perm]
 
         X_mag = np.abs(X_batch)
-        y_mag = np.abs(y_batch)
-
         X_mag = torch.from_numpy(X_mag).to(device)
+        X_phase = np.angle(X_batch) / np.pi
+        X_phase = torch.from_numpy(X_phase).to(device)
+
+        y_mag = np.abs(y_batch)
         y_mag = torch.from_numpy(y_mag).to(device)
+        y_phase = np.angle(y_batch) / np.pi
+        y_phase = torch.from_numpy(y_phase).to(device)
 
         model.zero_grad()
-        pred, aux1, aux2 = model(X_mag)
+        pred_mask, pred_phase_mask, aux1, aux2 = model(X_mag, X_phase)
+        phase_weight = torch.clamp(1 - pred_mask.detach(), 0, 1)
 
-        loss = crit(pred, y_mag) * 0.8
-        loss += crit(aux1, y_mag) * 0.1
-        loss += crit(aux2, y_mag) * 0.1
+        loss_phase = crit_phase(X_phase * pred_phase_mask, y_phase) * phase_weight
+        loss_phase = torch.mean(loss_phase[:, :, :model.band_size])
+
+        loss = loss_phase
 
         loss.backward()
         optimizer.step()
@@ -51,19 +131,23 @@ def train_inner_epoch(X, y, model, device, optimizer, batchsize):
 def val_inner_epoch(dataloader, model, device):
     model.eval()
     sum_loss = 0
-    crit = nn.L1Loss()
+    crit_phase = nn.MSELoss(reduction='none')
 
     with torch.no_grad():
-        for X_batch, y_batch in dataloader:
-            X_batch = X_batch.to(device)
-            y_batch = y_batch.to(device)
+        for X_mag, X_phase, y_mag, y_phase in dataloader:
+            X_mag = X_mag.to(device)
+            X_phase = X_phase.to(device)
 
-            pred = model.predict(X_batch)
+            y_mag = y_mag.to(device)
+            y_phase = y_phase.to(device)
 
-            y_batch = spec_utils.crop_center(y_batch, pred)
-            loss = crit(pred, y_batch)
+            pred_mask, pred_phase_mask = model(X_mag, X_phase)
 
-            sum_loss += loss.item() * len(X_batch)
+            loss_phase = crit_phase(X_phase * pred_phase_mask, y_phase)
+            loss_phase = torch.mean(loss_phase[:, :, :model.band_size])
+            loss = loss_phase
+
+            sum_loss += loss.item() * len(X_mag)
 
     return sum_loss / len(dataloader.dataset)
 
@@ -72,7 +156,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('--gpu', '-g', type=int, default=-1)
     p.add_argument('--seed', '-s', type=int, default=2019)
-    p.add_argument('--sr', '-r', type=int, default=44100)
+    p.add_argument('--sr', type=int, default=44100)
     p.add_argument('--hop_length', '-H', type=int, default=1024)
     p.add_argument('--n_fft', '-f', type=int, default=2048)
     p.add_argument('--dataset', '-d', required=True)
@@ -91,7 +175,7 @@ def main():
     p.add_argument('--epoch', '-E', type=int, default=60)
     p.add_argument('--inner_epoch', '-e', type=int, default=4)
     p.add_argument('--reduction_rate', '-R', type=float, default=0.0)
-    p.add_argument('--reduction_level', '-L', type=float, default=0.2)
+    p.add_argument('--reduction_level', '-L', type=float, default=0.1)
     p.add_argument('--mixup_rate', '-M', type=float, default=0.0)
     p.add_argument('--mixup_alpha', '-a', type=float, default=1.0)
     p.add_argument('--pretrained_model', '-P', type=str, default=None)
@@ -132,6 +216,23 @@ def main():
     if torch.cuda.is_available() and args.gpu >= 0:
         device = torch.device('cuda:{}'.format(args.gpu))
         model.to(device)
+
+    freeze_module_list = [
+        model.stg1_low_band_net,
+        model.stg1_high_band_net,
+        model.stg2_bridge,
+        model.stg2_low_band_net,
+        model.stg2_high_band_net,
+        model.stg3_mag_bridge,
+        model.stg3_full_band_net,
+        model.out,
+        model.aux1_out,
+        model.aux2_out,
+    ]
+
+    for m in freeze_module_list:
+        for p in m.parameters():
+            p.requires_grad = False
 
     optimizer = torch.optim.Adam(
         filter(lambda p: p.requires_grad, model.parameters()),
@@ -197,7 +298,8 @@ def main():
                 model=model,
                 device=device,
                 optimizer=optimizer,
-                batchsize=args.batchsize)
+                batchsize=args.batchsize,
+                freeze_module_list=freeze_module_list)
 
             val_loss = val_inner_epoch(val_dataloader, model, device)
 
